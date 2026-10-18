@@ -3,6 +3,7 @@ import time
 import requests
 import pandas as pd
 from openai import OpenAI
+from duckduckgo_search import DDGS
 
 CSV_FILE = "Dutch-National-Football-Team-Coach&Player-since-1994.csv"
 
@@ -46,33 +47,16 @@ def get_person(row):
     }
     return search_names, identity
 
-def search_weibo(keyword):
-    try:
-        print(f"  🔍 微博搜索: {keyword}")
-        r = requests.get("https://m.weibo.cn/api/container/getIndex", params={"containerid": f"100103type=1&q={keyword}", "page_type": "searchall"}, headers=HEADERS, timeout=10)
-        data = r.json()
-        out = []
-        for card in data.get("data",{}).get("cards",[]):
-            txt = card.get("mblog",{}).get("text","")
-            if txt: out.append({"platform":"微博","text":txt[:200]})
-        print(f"  ✅ 微博搜到 {len(out)} 条")
-        return out
-    except Exception as e:
-        print(f"  ❌ 微博搜索失败: {e}")
-        return []
-
 def search_web(query):
     try:
         print(f"  🔍 网页搜索: {query}")
-        r = requests.post("https://html.duckduckgo.com/html/", data={"q":query}, headers=HEADERS, timeout=10)
-        snips = []
-        for line in r.text.split("<a")[100:140]:
-            if "result__snippet" in line:
-                t = line.split(">",1)[-1].split("<",1)[0].strip()
-                if t: snips.append(t[:200])
-        result = [{"platform":"网页","text":s} for s in snips[:5]]
-        print(f"  ✅ 网页搜到 {len(result)} 条")
-        return result
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=5):
+                if r.get('body'):
+                    results.append({"platform": "网页", "text": r['body'][:200]})
+        print(f"  ✅ 网页搜到 {len(results)} 条")
+        return results
     except Exception as e:
         print(f"  ❌ 网页搜索失败: {e}")
         return []
@@ -80,8 +64,7 @@ def search_web(query):
 def collect_items(search_names, identity):
     items, seen = [], set()
     for nm in search_names[:2]:
-        items += search_weibo(nm)
-        items += search_web(f"{nm} 荷兰队")
+        items += search_web(f"{nm} 荷兰队 足球")
         time.sleep(1.5)
     dedup = []
     for it in items:
