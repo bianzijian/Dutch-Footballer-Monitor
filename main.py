@@ -24,12 +24,16 @@ _end = _today.strftime("%Y%m%d")
 _start = (_today - timedelta(days=7)).strftime("%Y%m%d")
 WEEK_START = _start
 WEEK_END = _end
+CURRENT_YEAR = str(_today.year)
 REPORT_TITLE = f"{WEEK_START}-{WEEK_END} 荷兰国家队历史球员资讯"
 
 print(f"📅 本周区间: {WEEK_START} ~ {WEEK_END}")
 
 BLOCK_DOMAINS = ["yahoo.com", "msn.com", "consent.", "privacy"]
 MAX_PER_PERSON = 3
+
+# 旧事复盘关键词
+REVIEW_KEYWORDS = ["回顾", "复盘", "专访", "谈当年", "谈20", "回忆", "昔日", "当年", "旧将", "名宿", "传奇", "缅怀"]
 
 # ========== 工具 ==========
 def cell_to_list(v):
@@ -77,12 +81,10 @@ def safe_url(url):
     return ""
 
 def parse_date_to_yyyymmdd(date_str):
-    """把 DDG news 的 date 字段转成 YYYYMMDD 整数，解析失败返回 0"""
+    """把 DDG news 的 date 字段转成 YYYYMMDD 整数"""
     if not date_str:
         return 0
-    # 格式可能是 2025-08-13T10:00:00 或 2025-08-13
     s = str(date_str).replace("-", "").replace(":", "").replace("T", "")
-    # 取前8位
     digits = re.sub(r"\D", "", s)
     if len(digits) >= 8:
         return int(digits[:8])
@@ -100,8 +102,22 @@ def in_week_range(date_str):
         return False
     return start_i <= d <= end_i
 
-# ========== 搜索（只用 news，硬过滤日期） ==========
+def has_old_year(text):
+    """检查文本中是否包含旧年份（非当前年份的4位数年份）"""
+    years = re.findall(r"\b(20\d{2})\b", text)
+    for y in years:
+        if y != CURRENT_YEAR:
+            return True
+    return False
+
+def is_review_article(title, text):
+    """判断是否为旧事复盘文章"""
+    combined = title + " " + text[:200]
+    return any(kw in combined for kw in REVIEW_KEYWORDS)
+
+# ========== 搜索 ==========
 def search_news(query):
+    """news 搜索，硬过滤日期"""
     out = []
     try:
         with DDGS() as ddgs:
@@ -117,6 +133,10 @@ def search_news(query):
                 if not in_week_range(date_str):
                     print(f"    ⏩ 旧闻跳过 ({date_str}): {title[:40]}")
                     continue
+                # 旧事复盘检查
+                if is_review_article(title, r.get("body") or ""):
+                    print(f"    🕘 旧事复盘跳过: {title[:40]}")
+                    continue
                 out.append({
                     "title": title,
                     "url": url,
@@ -130,17 +150,65 @@ def search_news(query):
         print(f"  ❌ news 失败: {e}")
     return out
 
-def collect_items(search_names, eng_name):
+def search_text_cn(query):
+    """中文源 text 搜索，带年份过滤"""
+    out = []
+    try:
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=8):
+                url = safe_url(r.get("href"))
+                if not url or is_blocked(url):
+                    continue
+                title = (r.get("title") or "").strip()
+                if not title:
+                    continue
+                body = r.get("body") or ""
+                # 中文源检查
+                h = host_of(url)
+                cn_domains = ["dongqiudi", "hupu", "zhibo8", "sina.com.cn", "qq.com", "sohu.com", "163.com", "toutiao.com"]
+                if not any(d in h for d in cn_domains):
+                    continue
+                # 年份过滤：标题/正文含旧年份直接丢
+                if has_old_year(title + " " + body[:200]):
+                    print(f"    ⏩ 旧年份跳过: {title[:40]}")
+                    continue
+                # 旧事复盘检查
+                if is_review_article(title, body):
+                    print(f"    🕘 旧事复盘跳过: {title[:40]}")
+                    continue
+                out.append({
+                    "title": title,
+                    "url": url,
+                    "text": body[:300],
+                    "source": h,
+                    "date": "",
+                    "lang": "cn",
+                })
+        print(f"  ✅ text 中文 {len(out)} 条")
+    except Exception as e:
+        print(f"  ❌ text 失败: {e}")
+    return out
+
+def collect_items(search_names, eng_name, alias_list):
+    """收集候选新闻：别名全进搜索"""
     items = []
     seen = set()
-    if eng_name:
-        items += search_news(f"{eng_name} Netherlands footballer")
+
+    # news 搜索：英文名 + 常用名 + 别名
+    all_names = list(dict.fromkeys(search_names + alias_list))  # 去重保序
+    for nm in all_names[:4]:  # 最多4个搜索词防太多
+        if nm:
+            items += search_news(f"{nm} 荷兰队")
+            time.sleep(1.5)
+            items += search_news(f"{nm} footballer")
+            time.sleep(1.5)
+
+    # 中文 text 兜底：中文名 + 别名
+    cn_names = [n for n in all_names if any('\u4e00' <= c <= '\u9fff' for c in n)]
+    for nm in cn_names[:3]:
+        items += search_text_cn(f"{nm} 荷兰队")
         time.sleep(1.5)
-        items += search_news(f"{eng_name} Oranje news")
-        time.sleep(1.5)
-    for nm in search_names[:2]:
-        items += search_news(f"{nm} 荷兰队")
-        time.sleep(1.5)
+
     # 去重
     dedup = []
     for it in items:
@@ -149,7 +217,7 @@ def collect_items(search_names, eng_name):
             dedup.append(it)
     return dedup
 
-# ========== LLM：只做合并 + 翻译 ==========
+# ========== LLM：合并 + 翻译 + 排除旧事复盘 ==========
 def llm_group_and_translate(identity, items):
     if not items:
         return []
@@ -160,14 +228,14 @@ def llm_group_and_translate(identity, items):
     joined = "\n\n".join(blocks)
 
     prompt = f"""目标人物：{name_hints}
-以下是已经过滤好的「本周内」候选新闻，全部是近7天内的。
+以下是已经过滤好的「本周内」候选新闻（近7天发布）。
 
-请做两件事：
+请做三件事：
 1. 把「同一件事」归到一组，每组只留最该保留的 1 条（中文优先；多条中文选最权威；无中文选最权威外文）
 2. 对被选中的条目：
    - 中文条目：只输出中文标题，摘要写 -
    - 外文条目：输出中文标题 + 150-200字摘要（包含事件经过、当事人角色、背景、后续）
-   - 标题本来就是中文的也按中文处理
+3. 【重要】如果某条新闻虽然本周发布，但内容是回顾旧事、复盘旧比赛、旧专访等（非本周新发生的事件），不要选中它。旧事复盘不发。
 
 输出格式（每行一条，最多 {MAX_PER_PERSON} 条）：
 序号 | 中文标题 | 摘要
@@ -210,7 +278,6 @@ def llm_group_and_translate(identity, items):
 # ========== 飞书拼接 ==========
 def build_post(all_people):
     content = []
-    # 标题行
     content.append([{"tag": "text", "text": f"🇳🇱 {REPORT_TITLE}", "style": "bold"}])
     content.append([{"tag": "text", "text": f"\n"}])
 
@@ -219,7 +286,6 @@ def build_post(all_people):
         if not news_list:
             continue
         any_news = True
-        # 人名加粗
         content.append([{"tag": "text", "text": name, "style": "bold"}])
 
         for n in news_list:
@@ -228,7 +294,7 @@ def build_post(all_people):
             if not title:
                 continue
             para = [{"tag": "text", "text": f"• {title}\n"}]
-            if it["lang"] == "auto":  # 外文
+            if it["lang"] == "auto":
                 summary = n.get("summary", "")
                 if summary and summary != "-":
                     para.append({"tag": "text", "text": f"{summary}\n"})
@@ -282,8 +348,10 @@ def main():
         search_names, identity = get_person(row)
         name = identity["full"] or identity["common"]
         print(f"\n=== {name} ===")
+        print(f"  搜索名: {search_names}")
+        print(f"  别名: {identity['alias']}")
 
-        items = collect_items(search_names, identity["eng_name"])
+        items = collect_items(search_names, identity["eng_name"], identity["alias"])
         if not items:
             print("  本周无候选（近7天内没搜到）")
             all_people.append((name, []))
