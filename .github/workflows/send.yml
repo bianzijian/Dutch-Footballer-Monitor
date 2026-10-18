@@ -1,0 +1,18 @@
+on:
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: pip install requests
+      - uses: actions/download-artifact@v4
+        with: {name: report-json}
+      - run: python main.py
+        env:
+          MODE: send
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
