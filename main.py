@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import requests
 import pandas as pd
@@ -15,7 +16,37 @@ MODEL = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
-# ========== 工具函数 ==========
+# 每周时间区间（测试写死，正式可改成自动算）
+WEEK_START = "20261012"
+WEEK_END = "20261018"
+REPORT_TITLE = f"{WEEK_START}-{WEEK_END} 荷兰国家队历史球员资讯"
+
+# 中文体育源优先级（数字越大越优先）
+CN_SOURCE_RANK = {
+    "dongqiudi.com": 100,
+    "hupu.com": 90,
+    "zhibo8.com": 80,
+    "sports.sina.com.cn": 75,
+    "sina.com.cn": 70,
+    "qq.com": 65,
+    "sohu.com": 60,
+    "163.com": 60,
+    "toutiao.com": 55,
+}
+
+# 外文权威源优先级
+EN_SOURCE_RANK = {
+    "ad.nl": 90, "telegraaf.nl": 88, "vi.nl": 86, "nos.nl": 85,
+    "sportnieuws.nl": 80,
+    "espn.com": 85, "bbc.com": 84, "skysports.com": 83, "theguardian.com": 82,
+    "reuters.com": 85, "apnews.com": 84,
+}
+
+BLOCK_DOMAINS = ["yahoo.com", "msn.com", "consent.", "privacy"]
+
+MAX_PER_PERSON = 3
+
+# ========== 工具 ==========
 def cell_to_list(v):
     if not isinstance(v, str):
         return []
@@ -32,221 +63,227 @@ def get_person(row):
     if isinstance(orig, str) and orig.strip():
         search_names.append(orig.strip().split()[-1])
     search_names = list(dict.fromkeys(search_names))
-    eng_name = ""
-    if isinstance(orig, str) and orig.strip():
-        eng_name = orig.strip()
-    elif isinstance(full, str) and full.strip():
-        eng_name = full.strip()
-    identity = {
+    eng_name = orig.strip() if isinstance(orig, str) and orig.strip() else (
+        full.strip() if isinstance(full, str) else "")
+    return search_names, {
         "full": full if isinstance(full, str) else "",
         "common": common if isinstance(common, str) else "",
         "orig": orig if isinstance(orig, str) else "",
         "eng_name": eng_name,
         "alias": cell_to_list(row.get("别名")),
-        "nick": cell_to_list(row.get("外号")),
         "position": row.get("位置", ""),
-        "wc": row.get("世界杯参加年", ""),
-        "ec": row.get("欧洲杯参加年", ""),
     }
-    return search_names, identity
 
-# ========== 搜索：新闻频道（主力） ==========
-def search_news(query, region="nl-nl"):
+def host_of(url):
+    if not url:
+        return ""
+    m = re.search(r"https?://([^/]+)/?", url)
+    return m.group(1).lower() if m else ""
+
+def is_blocked(url):
+    h = host_of(url)
+    return any(b in h for b in BLOCK_DOMAINS)
+
+def is_chinese(url):
+    h = host_of(url)
+    return any(cn in h for cn in CN_SOURCE_RANK)
+
+# ========== 搜索 ==========
+def search_news(query):
     out = []
     try:
         with DDGS() as ddgs:
-            for r in ddgs.news(query, region=region, max_results=5):
-                if r.get("body") or r.get("title"):
-                    out.append({
-                        "title": r.get("title", ""),
-                        "url": r.get("url", r.get("href", "")),
-                        "text": (r.get("body") or r.get("excerpt") or "")[:300]
-                    })
-        print(f"  ✅ 新闻频道搜到 {len(out)} 条")
+            for r in ddgs.news(query, region="nl-nl", timelimit="w", max_results=6):
+                url = r.get("url") or ""
+                if not url or is_blocked(url):
+                    continue
+                out.append({
+                    "title": r.get("title", ""),
+                    "url": url,
+                    "text": (r.get("body") or "")[:300],
+                    "source": (r.get("source") or "").lower(),
+                    "date": r.get("date", ""),
+                    "lang": "auto",
+                })
+        print(f"  ✅ news {len(out)} 条")
     except Exception as e:
-        print(f"  ❌ 新闻搜索失败: {e}")
+        print(f"  ❌ news 失败: {e}")
     return out
 
-# ========== 搜索：网页频道（兜底） ==========
 def search_text(query):
+    # 兜底，只取中文源；外文 text 结果无日期不信
     out = []
     try:
         with DDGS() as ddgs:
-            for r in ddgs.text(query, timelimit="w", max_results=5):
-                if r.get("body"):
-                    out.append({
-                        "title": r.get("title", ""),
-                        "url": r.get("href", ""),
-                        "text": r.get("body", "")[:300]
-                    })
-        print(f"  ✅ 网页频道搜到 {len(out)} 条")
+            for r in ddgs.text(query, max_results=6):
+                url = r.get("href") or ""
+                if not url or is_blocked(url):
+                    continue
+                if not is_chinese(url):
+                    continue
+                out.append({
+                    "title": r.get("title", ""),
+                    "url": url,
+                    "text": (r.get("body") or "")[:300],
+                    "source": host_of(url),
+                    "date": "",
+                    "lang": "cn",
+                })
+        print(f"  ✅ text 中文 {len(out)} 条")
     except Exception as e:
-        print(f"  ❌ 网页搜索失败: {e}")
+        print(f"  ❌ text 失败: {e}")
     return out
 
-def collect_items(search_names, eng_name=""):
+def collect_items(search_names, eng_name):
     items = []
     seen = set()
     if eng_name:
-        items += search_news(f"{eng_name} Netherlands football")
+        items += search_news(f"{eng_name} Netherlands footballer")
         time.sleep(1.5)
-        items += search_news(f"{eng_name} Dutch national team")
+        items += search_news(f"{eng_name} Oranje news")
         time.sleep(1.5)
     for nm in search_names[:2]:
-        items += search_text(f"{nm} 荷兰队 足球")
+        items += search_text(f"{nm} 荷兰队")
         time.sleep(1.5)
-    deduped = []
+    dedup = []
     for it in items:
-        k = it["url"] or it["text"][:40]
+        k = it["url"]
         if k not in seen:
             seen.add(k)
-            deduped.append(it)
-    return deduped
+            dedup.append(it)
+    return dedup
 
-# ========== LLM 过滤 + 翻译 ==========
-def llm_filter(identity, items):
+# ========== LLM：只做分组 + 外文翻译 ==========
+def llm_group_and_translate(identity, items):
     if not items:
-        print("  ⚠️ 无搜索结果")
         return []
-
-    name_hints = "、".join(filter(None, [
-        identity["full"], identity["common"], identity["orig"],
-        *identity["alias"], *identity["nick"]
-    ]))
-    ctx = []
-    if identity["position"]:
-        ctx.append(f"位置：{identity['position']}")
-    if identity["wc"]:
-        ctx.append(f"世界杯：{identity['wc']}")
-    if identity["ec"]:
-        ctx.append(f"欧洲杯：{identity['ec']}")
-    ctx_line = "；".join(ctx) or "荷兰足球人物"
-
+    name_hints = "、".join(filter(None, [identity["full"], identity["common"], identity["orig"], *identity["alias"]]))
     blocks = []
     for i, it in enumerate(items, 1):
-        blocks.append(f"[{i}] 标题：{it['title']}\n链接：{it['url']}\n摘要：{it['text']}")
+        blocks.append(f"[{i}] ({'中文' if it['lang']=='cn' else '外文'}) {it['title']}\n{it['text']}")
     joined = "\n\n".join(blocks)
 
     prompt = f"""目标人物：{name_hints}
-背景：{ctx_line}
-当前日期：2026年10月。请判断每条是否是此人的近期动态/新闻/转会/采访/伤情。
+下面是候选新闻，可能中英文混着来。
 
-对每条输入，按下面格式输出，不要解释、不要空行：
-序号 | 是否近期(是/否) | 中文翻译标题
+请做两件事：
+1. 把「同一件事」归到一组，每组只留最该保留的那 1 条（中文优先；多条中文选最权威；无中文选最权威外文）
+2. 对被选中的「外文」条目，给出：
+   中文标题 | 150-200字中文摘要（包含事件经过、当事人角色、背景、后续）
+   对被选中的「中文」条目，只给：
+   中文标题
+
+输出格式（每行一条，最多 {MAX_PER_PERSON} 条）：
+序号 | 中文标题 | 摘要（中文条摘要写“-”）
 ---
 {joined}"""
-
     try:
-        print(f"  🤖 调用 LLM ({MODEL})...")
         resp = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0
-        )
+            model=MODEL, messages=[{"role": "user", "content": prompt}], temperature=0)
         raw = resp.choices[0].message.content
-        print(f"  📝 LLM 原始返回:\n{raw}")
-        lines = [l.strip() for l in raw.splitlines() if l.strip() and "|" in l]
-
-        results = []
-        for line in lines:
+        print("  📝 LLM 返回:\n" + raw)
+        parsed = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if "|" not in line:
+                continue
             parts = [p.strip() for p in line.split("|")]
             if len(parts) < 3:
                 continue
-            # 修复：去掉方括号再转整数
-            idx_raw = parts[0].strip("[]").strip()
-            recent = parts[1].strip()
-            zh = parts[2].strip()
-            if recent != "是":
-                continue
+            idx = parts[0].strip("[]").strip()
             try:
-                i = int(idx_raw) - 1
+                i = int(re.findall(r"\d+", idx)[0]) - 1
             except:
                 continue
             if 0 <= i < len(items):
-                it = items[i]
-                results.append({
-                    "title": it["title"],
-                    "url": it["url"],
-                    "zh": zh
+                parsed.append({
+                    "item": items[i],
+                    "title": parts[1],
+                    "summary": parts[2],
                 })
-        print(f"  ✅ 过滤后 {len(results)} 条")
-        return results
+        return parsed[:MAX_PER_PERSON]
     except Exception as e:
         print(f"  ❌ LLM 失败: {e}")
         return []
 
-# ========== 飞书发送（富文本） ==========
-def send_lark(name, results):
-    content = {
+# ========== 飞书拼接 ==========
+def build_post(all_people):
+    content = []
+    content.append([{"tag": "text", "text": f"🇳🇱 {REPORT_TITLE}", "style": ["bold"]}])
+    content.append([{"tag": "text", "text": "\n"}])
+
+    any_news = False
+    for name, news_list in all_people:
+        if not news_list:
+            continue
+        any_news = True
+        content.append([{"tag": "text", "text": f"{name}", "style": ["bold"]}])
+        for n in news_list:
+            it = n["item"]
+            if it["lang"] == "cn":
+                # 中文：只标题+链接
+                content.append([
+                    {"tag": "text", "text": f"• {n['title']}\n"},
+                    {"tag": "a", "text": "原文链接", "href": it["url"]},
+                ])
+            else:
+                # 外文：标题+摘要+链接
+                summary = n["summary"] if n["summary"] not in ("-", "") else ""
+                content.append([
+                    {"tag": "text", "text": f"• {n['title']}\n{summary}\n"},
+                    {"tag": "a", "text": "原文链接", "href": it["url"]},
+                ])
+        content.append([{"tag": "text", "text": "\n"}])
+
+    if not any_news:
+        content.append([{"tag": "text", "text": "本周暂无符合条件的动态"}])
+
+    return {
         "msg_type": "post",
-        "content": {
-            "post": {
-                "zh_cn": {
-                    "title": f"球员周报 | {name}",
-                    "content": []
-                }
-            }
-        }
+        "content": {"post": {"zh_cn": {"title": REPORT_TITLE, "content": content}}},
     }
-    for r in results:
-        content["content"]["post"]["zh_cn"]["content"].append([
-            {"tag": "text", "text": f"• {r['zh']}\n"},
-            {"tag": "a", "text": "原文链接", "href": r["url"]},
-        ])
-    if not results:
-        content["content"]["post"]["zh_cn"]["content"].append([
-            {"tag": "text", "text": "本周暂无新动态"}
-        ])
+
+def send_lark(payload):
+    if not LARK_WEBHOOK:
+        print("⚠️ 没配 webhook，不发送")
+        return
     try:
-        r = requests.post(LARK_WEBHOOK, json=content, timeout=10)
-        print(f"  📤 飞书发送: {r.status_code}")
+        r = requests.post(LARK_WEBHOOK, json=payload, timeout=15)
+        print(f"📤 飞书发送: {r.status_code}")
     except Exception as e:
-        print(f"  📤 飞书失败: {e}")
+        print(f"📤 飞书失败: {e}")
 
 # ========== 主函数 ==========
 def main():
-    print("🚀 开始运行...")
-    print(f"🔧 LARK_WEBHOOK: {'已配置' if LARK_WEBHOOK else '未配置'}")
-    print(f"🔧 API_KEY: {'已配置' if API_KEY else '未配置'}")
-    print(f"🔧 MODEL: {MODEL}")
-
+    print("🚀 开始")
     df = pd.read_csv(CSV_FILE, encoding="utf-8-sig")
     df.columns = df.columns.str.strip()
-    print(f"📋 共读取 {len(df)} 行")
 
-    # 测试模式：跑现役球员
-    test_keywords = ["范戴克", "加克波", "德佩", "邓弗里斯", "哈维·西蒙斯"]
-    df_test = df[df["全名"].astype(str).str.contains("|".join(test_keywords), na=False)]
-    if len(df_test) > 0:
-        df = df_test
-        print(f"📋 测试模式：跑 {len(df)} 名现役球员")
-    else:
-        df = df.head(3)
-        print(f"📋 测试模式：前 3 人")
+    test_kw = ["斯内德", "库伊特", "罗本", "德弗赖"]
+    df_test = df[df["全名"].astype(str).str.contains("|".join(test_kw), na=False)]
+    df = df_test if len(df_test) else df.head(4)
+    print(f"📋 测试 {len(df)} 人")
 
-    for i, (_, row) in enumerate(df.iterrows(), 1):
+    all_people = []
+    for _, row in df.iterrows():
         search_names, identity = get_person(row)
         name = identity["full"] or identity["common"]
-        print(f"\n--- [{i}/{len(df)}] {name} ---")
-        print(f"  英文名: {identity['eng_name']}")
-        print(f"  搜索词: {search_names}")
-
-        if not search_names and not identity["eng_name"]:
-            print("  ⚠️ 无搜索词，跳过")
-            continue
+        print(f"\n=== {name} ===")
 
         items = collect_items(search_names, identity["eng_name"])
-        print(f"  汇总 {len(items)} 条候选")
-        res = llm_filter(identity, items)
+        if not items:
+            print("  无候选")
+            all_people.append((name, []))
+            continue
 
-        if res:
-            send_lark(name, res)
-            print(f"  ✅ 已发送飞书 ({len(res)} 条)")
-        else:
-            print(f"  ⚠️ 本周无相关动态")
-        time.sleep(3)
+        picked = llm_group_and_translate(identity, items)
+        print(f"  选中 {len(picked)} 条")
+        all_people.append((name, picked))
+        time.sleep(2)
 
-    print("\n🏁 全部完成")
+    payload = build_post(all_people)
+    send_lark(payload)
+    print("\n🏁 完成")
 
 if __name__ == "__main__":
     main()
