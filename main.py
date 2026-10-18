@@ -18,11 +18,16 @@ MODEL = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
+# 周一跑 → 上周一到上周日；其他时间 → 过去7天
 _today = datetime.now()
-_end = _today.strftime("%Y%m%d")
-_start = (_today - timedelta(days=7)).strftime("%Y%m%d")
-WEEK_START = _start
-WEEK_END = _end
+_wd = _today.weekday()  # 0=周一
+if _wd == 0:
+    WEEK_END = (_today - timedelta(days=1)).strftime("%Y%m%d")   # 昨天=上周日
+    WEEK_START = (_today - timedelta(days=7)).strftime("%Y%m%d") # 上周一
+else:
+    WEEK_END = _today.strftime("%Y%m%d")
+    WEEK_START = (_today - timedelta(days=7)).strftime("%Y%m%d")
+
 CURRENT_YEAR = _today.year
 REPORT_TITLE = f"{WEEK_START}-{WEEK_END} 荷兰国家队历史球员资讯"
 print(f"📅 本周区间: {WEEK_START} ~ {WEEK_END}")
@@ -94,7 +99,6 @@ def name_in_title(name_list, title):
     return any(n in title for n in name_list if n)
 
 def is_subject_match(name_list, title, text):
-    """标题含名 → 过；否则看正文前120字是否以该球员为主体"""
     if name_in_title(name_list, title):
         return True
     head = text[:120]
@@ -144,7 +148,6 @@ def search_text_cn(query, name_list):
                 if is_review(title, body):
                     print(f"    🕘 复盘: {title[:30]}")
                     continue
-                # 主体匹配：标题或正文前120字得有这人
                 if not is_subject_match(name_list, title, body):
                     print(f"    ❌ 误关联: {title[:30]}")
                     continue
@@ -170,7 +173,7 @@ def collect_items(search_names, alias_list):
         time.sleep(1.2)
     for it in items:
         if it["url"] not in seen:
-            seen.add(it["url"]); 
+            seen.add(it["url"])
     return [it for it in items if it["url"] in seen]
 
 # ========== LLM ==========
