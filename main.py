@@ -10,6 +10,7 @@ from ddgs import DDGS
 
 # ========== 配置 ==========
 CSV_FILE = "Dutch-National-Football-Team-Coach&Player-since-1994.csv"
+MODE = os.environ.get("MODE", "build")  # build / send
 
 LARK_WEBHOOK = os.environ.get("LARK_WEBHOOK")
 API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -18,19 +19,19 @@ MODEL = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
-# 周一跑 → 上周一到上周日；其他时间 → 过去7天
+# 周一跑 → 上周一到上周日
 _today = datetime.now()
-_wd = _today.weekday()  # 0=周一
+_wd = _today.weekday()
 if _wd == 0:
-    WEEK_END = (_today - timedelta(days=1)).strftime("%Y%m%d")   # 昨天=上周日
-    WEEK_START = (_today - timedelta(days=7)).strftime("%Y%m%d") # 上周一
+    WEEK_END = (_today - timedelta(days=1)).strftime("%Y%m%d")
+    WEEK_START = (_today - timedelta(days=7)).strftime("%Y%m%d")
 else:
     WEEK_END = _today.strftime("%Y%m%d")
     WEEK_START = (_today - timedelta(days=7)).strftime("%Y%m%d")
 
 CURRENT_YEAR = _today.year
 REPORT_TITLE = f"{WEEK_START}-{WEEK_END} 荷兰国家队历史球员资讯"
-print(f"📅 本周区间: {WEEK_START} ~ {WEEK_END}")
+print(f"📅 区间: {WEEK_START}~{WEEK_END} | MODE={MODE}")
 
 BLOCK_DOMAINS = ["yahoo.com", "msn.com", "consent.", "privacy"]
 MAX_PER_PERSON = 3
@@ -54,14 +55,11 @@ def get_person(row):
     if isinstance(orig, str) and orig.strip():
         search_names.append(orig.strip().split()[-1])
     search_names = list(dict.fromkeys(search_names))
-    eng_name = orig.strip() if isinstance(orig, str) and orig.strip() else (full.strip() if isinstance(full, str) else "")
     return search_names, {
         "full": full if isinstance(full, str) else "",
         "common": common if isinstance(common, str) else "",
         "orig": orig if isinstance(orig, str) else "",
-        "eng_name": eng_name,
         "alias": cell_to_list(row.get("别名")),
-        "position": row.get("位置", ""),
     }
 
 def host_of(url):
@@ -92,17 +90,11 @@ def title_has_old_year(title):
     return any(int(y) < CURRENT_YEAR for y in ys)
 
 def is_review(title, text):
-    blob = title + " " + text[:200]
-    return any(k in blob for k in REVIEW_KW)
-
-def name_in_title(name_list, title):
-    return any(n in title for n in name_list if n)
+    return any(k in (title + " " + text[:200]) for k in REVIEW_KW)
 
 def is_subject_match(name_list, title, text):
-    if name_in_title(name_list, title):
-        return True
-    head = text[:120]
-    return any(n in head for n in name_list if n)
+    if any(n in title for n in name_list if n): return True
+    return any(n in text[:120] for n in name_list if n)
 
 # ========== 搜索 ==========
 def search_news(query):
@@ -114,17 +106,11 @@ def search_news(query):
                 if not url or is_blocked(url): continue
                 title = (r.get("title") or "").strip()
                 if not title: continue
-                date_str = r.get("date", "")
-                if not in_week(date_str):
-                    print(f"    ⏩ 旧闻({date_str}): {title[:30]}")
+                if not in_week(r.get("date", "")):
                     continue
                 body = r.get("body") or ""
-                if is_review(title, body):
-                    print(f"    🕘 复盘: {title[:30]}")
-                    continue
-                out.append({"title": title, "url": url, "text": body[:200],
-                            "date": date_str, "lang": "auto"})
-        print(f"  ✅ news {len(out)}")
+                if is_review(title, body): continue
+                out.append({"title": title, "url": url, "text": body[:200], "lang": "auto"})
     except Exception as e:
         print(f"  ❌ news: {e}")
     return out
@@ -142,18 +128,10 @@ def search_text_cn(query, name_list):
                 h = host_of(url)
                 if not any(d in h for d in ["dongqiudi","hupu","zhibo8","sina.com.cn","qq.com","sohu.com","163.com"]):
                     continue
-                if title_has_old_year(title):
-                    print(f"    ⏩ 旧年: {title[:30]}")
-                    continue
-                if is_review(title, body):
-                    print(f"    🕘 复盘: {title[:30]}")
-                    continue
-                if not is_subject_match(name_list, title, body):
-                    print(f"    ❌ 误关联: {title[:30]}")
-                    continue
-                out.append({"title": title, "url": url, "text": body[:200],
-                            "date": "", "lang": "cn"})
-        print(f"  ✅ text {len(out)}")
+                if title_has_old_year(title): continue
+                if is_review(title, body): continue
+                if not is_subject_match(name_list, title, body): continue
+                out.append({"title": title, "url": url, "text": body[:200], "lang": "cn"})
     except Exception as e:
         print(f"  ❌ text: {e}")
     return out
@@ -163,17 +141,13 @@ def collect_items(search_names, alias_list):
     all_n = list(dict.fromkeys(search_names + alias_list))
     for nm in all_n[:3]:
         if not nm: continue
-        items += search_news(f"{nm} 荷兰队")
-        time.sleep(1.2)
-        items += search_news(f"{nm} footballer")
-        time.sleep(1.2)
+        items += search_news(f"{nm} 荷兰队"); time.sleep(1.2)
+        items += search_news(f"{nm} footballer"); time.sleep(1.2)
     cn = [n for n in all_n if any('一' <= c <= '鿿' for c in n)]
     for nm in cn[:2]:
-        items += search_text_cn(f"{nm} 荷兰队", all_n)
-        time.sleep(1.2)
+        items += search_text_cn(f"{nm} 荷兰队", all_n); time.sleep(1.2)
     for it in items:
-        if it["url"] not in seen:
-            seen.add(it["url"])
+        if it["url"] not in seen: seen.add(it["url"])
     return [it for it in items if it["url"] in seen]
 
 # ========== LLM ==========
@@ -183,8 +157,7 @@ def llm_filter(identity, items):
     blocks = [f"[{i}] {'外文' if it['lang']=='auto' else '中文'} {it['title']}\n{it['text']}"
               for i, it in enumerate(items, 1)]
     prompt = f"""目标球员：{hints}
-下面是本周内候选新闻。只选「本周新发生、且该球员是事件主体」的条。
-规则：
+只选本周新发生、该球员是事件主体的条。
 - 旧事复盘/球员介绍/仅提及名字 → 不选
 - 中文条：标题原样，摘要写 -
 - 外文条：中文标题 + 120~180字摘要
@@ -193,9 +166,8 @@ def llm_filter(identity, items):
 """ + "\n\n".join(blocks)
     try:
         resp = client.chat.completions.create(model=MODEL, messages=[{"role":"user","content":prompt}], temperature=0)
-        raw = resp.choices[0].message.content
         out = []
-        for line in raw.splitlines():
+        for line in resp.choices[0].message.content.splitlines():
             line = line.strip()
             if "|" not in line: continue
             m = re.search(r"(\d+)", line)
@@ -210,7 +182,7 @@ def llm_filter(identity, items):
     except Exception as e:
         print(f"  ❌ llm: {e}"); return []
 
-# ========== 飞书 ==========
+# ========== 飞书拼装 ==========
 def build_post(all_people):
     content = [[{"tag":"text","text":f"🇳🇱 {REPORT_TITLE}","style":"bold"}],
                [{"tag":"text","text":"\n"}]]
@@ -222,31 +194,25 @@ def build_post(all_people):
         for n in news:
             it = n["item"]
             para = [{"tag":"text","text":f"• {n['title']}\n"}]
-            if it["lang"] == "auto" and n.get("summary") and n["summary"]!="-":
+            if it["lang"]=="auto" and n.get("summary") and n["summary"]!="-":
                 para.append({"tag":"text","text":f"{n['summary']}\n"})
             if safe_url(it.get("url")):
                 para.append({"tag":"a","text":"原文链接","href":it["url"]})
             content.append(para)
-        content.append([{"tag":"text","text":"\n"}])  # 每人空一行
+        content.append([{"tag":"text","text":"\n"}])
     if not any_news:
         content.append([{"tag":"text","text":"本周暂无符合条件的动态"}])
     return {"msg_type":"post","content":{"post":{"zh_cn":{"title":REPORT_TITLE,"content":content}}}}
 
-def send_lark(payload):
-    if not LARK_WEBHOOK:
-        print("⚠️ 无 webhook"); return
-    try:
-        r = requests.post(LARK_WEBHOOK, json=payload, timeout=15)
-        print(f"📤 {r.status_code} {r.text}")
-    except Exception as e:
-        print(f"📤 失败: {e}")
-
-# ========== main ==========
+# ========== 主流程 ==========
 def main():
-    print("🚀")
+    if MODE == "send":
+        send_from_file()
+        return
+
+    print("🚀 build")
     df = pd.read_csv(CSV_FILE, encoding="utf-8-sig")
     df.columns = df.columns.str.strip()
-    print(f"📋 {len(df)} 人")
     all_people = []
     for idx, row in df.iterrows():
         sn, idt = get_person(row)
@@ -257,8 +223,25 @@ def main():
         print(f"  选中 {len(picked)}")
         all_people.append((name, picked))
         time.sleep(1)
-    send_lark(build_post(all_people))
-    print("🏁")
+
+    payload = build_post(all_people)
+    with open("report.json", "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    print("💾 report.json 已生成")
+
+def send_from_file():
+    if not os.path.exists("report.json"):
+        print("⚠️ 没有 report.json，先跑 build")
+        return
+    with open("report.json", "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not LARK_WEBHOOK:
+        print("⚠️ 无 LARK_WEBHOOK"); return
+    try:
+        r = requests.post(LARK_WEBHOOK, json=payload, timeout=15)
+        print(f"📤 {r.status_code} {r.text}")
+    except Exception as e:
+        print(f"📤 失败: {e}")
 
 if __name__ == "__main__":
     main()
