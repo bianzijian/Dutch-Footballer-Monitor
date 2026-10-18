@@ -81,7 +81,6 @@ def safe_url(url):
     return ""
 
 def parse_date_to_yyyymmdd(date_str):
-    """把 DDG news 的 date 字段转成 YYYYMMDD 整数"""
     if not date_str:
         return 0
     s = str(date_str).replace("-", "").replace(":", "").replace("T", "")
@@ -91,7 +90,6 @@ def parse_date_to_yyyymmdd(date_str):
     return 0
 
 def in_week_range(date_str):
-    """判断日期是否在本周区间内"""
     d = parse_date_to_yyyymmdd(date_str)
     if d == 0:
         return False
@@ -103,7 +101,6 @@ def in_week_range(date_str):
     return start_i <= d <= end_i
 
 def has_old_year(text):
-    """检查文本中是否包含旧年份（非当前年份的4位数年份）"""
     years = re.findall(r"\b(20\d{2})\b", text)
     for y in years:
         if y != CURRENT_YEAR:
@@ -111,13 +108,11 @@ def has_old_year(text):
     return False
 
 def is_review_article(title, text):
-    """判断是否为旧事复盘文章"""
     combined = title + " " + text[:200]
     return any(kw in combined for kw in REVIEW_KEYWORDS)
 
 # ========== 搜索 ==========
 def search_news(query):
-    """news 搜索，硬过滤日期"""
     out = []
     try:
         with DDGS() as ddgs:
@@ -129,11 +124,9 @@ def search_news(query):
                 if not title:
                     continue
                 date_str = r.get("date", "")
-                # 日期过滤：不在本周区间内直接丢
                 if not in_week_range(date_str):
                     print(f"    ⏩ 旧闻跳过 ({date_str}): {title[:40]}")
                     continue
-                # 旧事复盘检查
                 if is_review_article(title, r.get("body") or ""):
                     print(f"    🕘 旧事复盘跳过: {title[:40]}")
                     continue
@@ -151,7 +144,6 @@ def search_news(query):
     return out
 
 def search_text_cn(query):
-    """中文源 text 搜索，带年份过滤"""
     out = []
     try:
         with DDGS() as ddgs:
@@ -163,16 +155,13 @@ def search_text_cn(query):
                 if not title:
                     continue
                 body = r.get("body") or ""
-                # 中文源检查
                 h = host_of(url)
                 cn_domains = ["dongqiudi", "hupu", "zhibo8", "sina.com.cn", "qq.com", "sohu.com", "163.com", "toutiao.com"]
                 if not any(d in h for d in cn_domains):
                     continue
-                # 年份过滤：标题/正文含旧年份直接丢
                 if has_old_year(title + " " + body[:200]):
                     print(f"    ⏩ 旧年份跳过: {title[:40]}")
                     continue
-                # 旧事复盘检查
                 if is_review_article(title, body):
                     print(f"    🕘 旧事复盘跳过: {title[:40]}")
                     continue
@@ -190,26 +179,19 @@ def search_text_cn(query):
     return out
 
 def collect_items(search_names, eng_name, alias_list):
-    """收集候选新闻：别名全进搜索"""
     items = []
     seen = set()
-
-    # news 搜索：英文名 + 常用名 + 别名
-    all_names = list(dict.fromkeys(search_names + alias_list))  # 去重保序
-    for nm in all_names[:4]:  # 最多4个搜索词防太多
+    all_names = list(dict.fromkeys(search_names + alias_list))
+    for nm in all_names[:4]:
         if nm:
             items += search_news(f"{nm} 荷兰队")
             time.sleep(1.5)
             items += search_news(f"{nm} footballer")
             time.sleep(1.5)
-
-    # 中文 text 兜底：中文名 + 别名
     cn_names = [n for n in all_names if any('\u4e00' <= c <= '\u9fff' for c in n)]
     for nm in cn_names[:3]:
         items += search_text_cn(f"{nm} 荷兰队")
         time.sleep(1.5)
-
-    # 去重
     dedup = []
     for it in items:
         if it["url"] not in seen:
@@ -217,7 +199,7 @@ def collect_items(search_names, eng_name, alias_list):
             dedup.append(it)
     return dedup
 
-# ========== LLM：合并 + 翻译 + 排除旧事复盘 ==========
+# ========== LLM ==========
 def llm_group_and_translate(identity, items):
     if not items:
         return []
@@ -337,23 +319,19 @@ def main():
     print("🚀 开始")
     df = pd.read_csv(CSV_FILE, encoding="utf-8-sig")
     df.columns = df.columns.str.strip()
-
-    test_kw = ["斯内德", "库伊特", "罗本", "德弗赖"]
-    df_test = df[df["全名"].astype(str).str.contains("|".join(test_kw), na=False)]
-    df = df_test if len(df_test) else df.head(4)
-    print(f"📋 测试 {len(df)} 人")
+    print(f"📋 共 {len(df)} 人，全量遍历")
 
     all_people = []
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         search_names, identity = get_person(row)
         name = identity["full"] or identity["common"]
-        print(f"\n=== {name} ===")
+        print(f"\n=== [{idx+1}/{len(df)}] {name} ===")
         print(f"  搜索名: {search_names}")
         print(f"  别名: {identity['alias']}")
 
         items = collect_items(search_names, identity["eng_name"], identity["alias"])
         if not items:
-            print("  本周无候选（近7天内没搜到）")
+            print("  本周无候选")
             all_people.append((name, []))
             continue
 
