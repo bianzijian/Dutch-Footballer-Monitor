@@ -1,4 +1,5 @@
-requests
 pandas
 openai
-duckduckgo_search
+requests
+ddgs
+python-dateutil
