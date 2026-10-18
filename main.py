@@ -32,7 +32,6 @@ def get_person(row):
     if isinstance(orig, str) and orig.strip():
         search_names.append(orig.strip().split()[-1])
     search_names = list(dict.fromkeys(search_names))
-    # 英文名（用于英文搜索）
     eng_name = ""
     if isinstance(orig, str) and orig.strip():
         eng_name = orig.strip()
@@ -88,17 +87,14 @@ def search_text(query):
 def collect_items(search_names, eng_name=""):
     items = []
     seen = set()
-    # 英文搜索（新闻频道）
     if eng_name:
         items += search_news(f"{eng_name} Netherlands football")
         time.sleep(1.5)
         items += search_news(f"{eng_name} Dutch national team")
         time.sleep(1.5)
-    # 中文搜索（网页频道兜底）
     for nm in search_names[:2]:
         items += search_text(f"{nm} 荷兰队 足球")
         time.sleep(1.5)
-    # 去重
     deduped = []
     for it in items:
         k = it["url"] or it["text"][:40]
@@ -156,11 +152,14 @@ def llm_filter(identity, items):
             parts = [p.strip() for p in line.split("|")]
             if len(parts) < 3:
                 continue
-            idx, recent, zh = parts[0], parts[1], parts[2]
+            # 修复：去掉方括号再转整数
+            idx_raw = parts[0].strip("[]").strip()
+            recent = parts[1].strip()
+            zh = parts[2].strip()
             if recent != "是":
                 continue
             try:
-                i = int(idx) - 1
+                i = int(idx_raw) - 1
             except:
                 continue
             if 0 <= i < len(items):
@@ -215,7 +214,7 @@ def main():
     df.columns = df.columns.str.strip()
     print(f"📋 共读取 {len(df)} 行")
 
-    # 测试模式：跑现役球员（范戴克/加克波/德佩）
+    # 测试模式：跑现役球员
     test_keywords = ["范戴克", "加克波", "德佩", "邓弗里斯", "哈维·西蒙斯"]
     df_test = df[df["全名"].astype(str).str.contains("|".join(test_keywords), na=False)]
     if len(df_test) > 0:
@@ -223,7 +222,7 @@ def main():
         print(f"📋 测试模式：跑 {len(df)} 名现役球员")
     else:
         df = df.head(3)
-        print(f"📋 测试模式：前 3 人（未匹配到现役球员）")
+        print(f"📋 测试模式：前 3 人")
 
     for i, (_, row) in enumerate(df.iterrows(), 1):
         search_names, identity = get_person(row)
