@@ -213,6 +213,7 @@ def main():
     print("🚀 build")
     df = pd.read_csv(CSV_FILE, encoding="utf-8-sig")
     df.columns = df.columns.str.strip()
+    print(f"📋 {len(df)} 人")
     all_people = []
     for idx, row in df.iterrows():
         sn, idt = get_person(row)
