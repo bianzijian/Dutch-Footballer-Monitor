@@ -16,12 +16,12 @@ MODEL = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
-# 每周时间区间（测试写死，正式可改成自动算）
+# 每周时间区间
 WEEK_START = "20261012"
 WEEK_END = "20261018"
 REPORT_TITLE = f"{WEEK_START}-{WEEK_END} 荷兰国家队历史球员资讯"
 
-# 中文体育源优先级（数字越大越优先）
+# 中文体育源优先级
 CN_SOURCE_RANK = {
     "dongqiudi.com": 100,
     "hupu.com": 90,
@@ -32,14 +32,6 @@ CN_SOURCE_RANK = {
     "sohu.com": 60,
     "163.com": 60,
     "toutiao.com": 55,
-}
-
-# 外文权威源优先级
-EN_SOURCE_RANK = {
-    "ad.nl": 90, "telegraaf.nl": 88, "vi.nl": 86, "nos.nl": 85,
-    "sportnieuws.nl": 80,
-    "espn.com": 85, "bbc.com": 84, "skysports.com": 83, "theguardian.com": 82,
-    "reuters.com": 85, "apnews.com": 84,
 }
 
 BLOCK_DOMAINS = ["yahoo.com", "msn.com", "consent.", "privacy"]
@@ -111,7 +103,6 @@ def search_news(query):
     return out
 
 def search_text(query):
-    # 兜底，只取中文源；外文 text 结果无日期不信
     out = []
     try:
         with DDGS() as ddgs:
@@ -153,7 +144,7 @@ def collect_items(search_names, eng_name):
             dedup.append(it)
     return dedup
 
-# ========== LLM：只做分组 + 外文翻译 ==========
+# ========== LLM：分组 + 翻译 ==========
 def llm_group_and_translate(identity, items):
     if not items:
         return []
@@ -168,15 +159,16 @@ def llm_group_and_translate(identity, items):
 
 请做两件事：
 1. 把「同一件事」归到一组，每组只留最该保留的那 1 条（中文优先；多条中文选最权威；无中文选最权威外文）
-2. 对被选中的「外文」条目，给出：
-   中文标题 | 150-200字中文摘要（包含事件经过、当事人角色、背景、后续）
-   对被选中的「中文」条目，只给：
-   中文标题
+2. 对被选中的条目：
+   - 中文条目：只输出中文标题，摘要栏写 -
+   - 外文条目：输出中文标题 + 150-200字中文摘要（包含事件经过、当事人角色、背景、后续）
+   - 即使原文是中文网站但标题是外文，也按外文处理，必须写摘要
 
 输出格式（每行一条，最多 {MAX_PER_PERSON} 条）：
-序号 | 中文标题 | 摘要（中文条摘要写“-”）
+序号 | 中文标题 | 摘要
 ---
 {joined}"""
+
     try:
         resp = client.chat.completions.create(
             model=MODEL, messages=[{"role": "user", "content": prompt}], temperature=0)
@@ -188,19 +180,26 @@ def llm_group_and_translate(identity, items):
             if "|" not in line:
                 continue
             parts = [p.strip() for p in line.split("|")]
-            if len(parts) < 3:
+            if len(parts) < 2:
                 continue
-            idx = parts[0].strip("[]").strip()
+            # 序号
+            idx_raw = parts[0].strip("[]").strip()
             try:
-                i = int(re.findall(r"\d+", idx)[0]) - 1
+                idx_num = re.findall(r"\d+", idx_raw)[0]
+                i = int(idx_num) - 1
             except:
                 continue
-            if 0 <= i < len(items):
-                parsed.append({
-                    "item": items[i],
-                    "title": parts[1],
-                    "summary": parts[2],
-                })
+            if not (0 <= i < len(items)):
+                continue
+            title = parts[1].strip() if len(parts) > 1 else ""
+            if not title:
+                continue
+            summary = parts[2].strip() if len(parts) > 2 else "-"
+            parsed.append({
+                "item": items[i],
+                "title": title,
+                "summary": summary,
+            })
         return parsed[:MAX_PER_PERSON]
     except Exception as e:
         print(f"  ❌ LLM 失败: {e}")
@@ -210,30 +209,31 @@ def llm_group_and_translate(identity, items):
 def build_post(all_people):
     content = []
     content.append([{"tag": "text", "text": f"🇳🇱 {REPORT_TITLE}", "style": ["bold"]}])
-    content.append([{"tag": "text", "text": "\n"}])
+    content.append([{"tag": "text", "text": ""}])
 
     any_news = False
     for name, news_list in all_people:
         if not news_list:
             continue
         any_news = True
-        content.append([{"tag": "text", "text": f"{name}", "style": ["bold"]}])
+        # 人名加粗
+        content.append([{"tag": "text", "text": name, "style": ["bold"]}])
+
         for n in news_list:
             it = n["item"]
-            if it["lang"] == "cn":
-                # 中文：只标题+链接
-                content.append([
-                    {"tag": "text", "text": f"• {n['title']}\n"},
-                    {"tag": "a", "text": "原文链接", "href": it["url"]},
-                ])
-            else:
-                # 外文：标题+摘要+链接
-                summary = n["summary"] if n["summary"] not in ("-", "") else ""
-                content.append([
-                    {"tag": "text", "text": f"• {n['title']}\n{summary}\n"},
-                    {"tag": "a", "text": "原文链接", "href": it["url"]},
-                ])
-        content.append([{"tag": "text", "text": "\n"}])
+            title = (n.get("title") or "").strip()
+            if not title:
+                continue
+            # 同一段里：标题 + 摘要 + 链接
+            para = [{"tag": "text", "text": f"• {title}\n"}]
+            if it["lang"] != "cn":
+                summary = n.get("summary", "")
+                if summary and summary != "-":
+                    para.append({"tag": "text", "text": f"{summary}\n"})
+            para.append({"tag": "a", "text": "原文链接", "href": it["url"]})
+            content.append(para)
+
+        content.append([{"tag": "text", "text": ""}])
 
     if not any_news:
         content.append([{"tag": "text", "text": "本周暂无符合条件的动态"}])
@@ -249,7 +249,8 @@ def send_lark(payload):
         return
     try:
         r = requests.post(LARK_WEBHOOK, json=payload, timeout=15)
-        print(f"📤 飞书发送: {r.status_code}")
+        print(f"📤 状态码: {r.status_code}")
+        print(f"📤 响应体: {r.text}")
     except Exception as e:
         print(f"📤 飞书失败: {e}")
 
