@@ -1,3 +1,4 @@
 requests
 pandas
 openai
+duckduckgo_search
