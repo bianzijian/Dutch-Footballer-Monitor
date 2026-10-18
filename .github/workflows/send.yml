@@ -1,18 +1,32 @@
+name: Dutch Monitor Send
+
 on:
   schedule:
-    - cron: '0 4 * * 1'
+    - cron: '0 4 * * 1'   # 北京时间周一12:00
   workflow_dispatch:
+
 jobs:
   send:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: {python-version: '3.11'}
-      - run: pip install requests
-      - uses: actions/download-artifact@v4
-        with: {name: report-json}
-      - run: python main.py
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install requests
+
+      - name: 下载上次build的report.json
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          workflow: build.yml
+          name: report-json
+          workflow_conclusion: success
+
+      - name: 发飞书
         env:
           MODE: send
           LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+        run: python main.py
