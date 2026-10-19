@@ -2,7 +2,7 @@ name: Dutch Monitor Send
 
 on:
   schedule:
-    - cron: '0 4 * * 1'   # 北京时间周一12:00
+    - cron: '0 4 * * 1'   # 北京周一12点
   workflow_dispatch:
 
 jobs:
@@ -15,10 +15,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 安装依赖
+      - name: 装依赖（发消息只需 requests）
         run: pip install requests
 
-      - name: 下载上次build的report.json
+      - name: 取 build 的 artifact
         uses: dawidd6/action-download-artifact@v2
         with:
           workflow: build.yml
