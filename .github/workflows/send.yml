@@ -15,8 +15,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 装依赖（发消息只需 requests）
-        run: pip install requests
+      - name: 装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: 取 build 的 artifact
         uses: dawidd6/action-download-artifact@v2
