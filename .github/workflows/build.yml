@@ -2,7 +2,7 @@ name: Dutch Monitor Build
 
 on:
   schedule:
-    - cron: '0 2 * * 1'   # 北京时间周一10:00
+    - cron: '0 2 * * 1'   # 北京周一10点
   workflow_dispatch:
 
 jobs:
@@ -15,10 +15,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 安装依赖
-        run: pip install pandas openai ddgs requests
+      - name: 装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: 跑搜索+LLM生成report.json
+      - name: 跑 build
         env:
           MODE: build
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -26,7 +28,7 @@ jobs:
           MODEL_NAME: ${{ secrets.MODEL_NAME }}
         run: python main.py
 
-      - name: 上传report.json
+      - name: 传 report.json
         uses: actions/upload-artifact@v4
         with:
           name: report-json
