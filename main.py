@@ -17,7 +17,7 @@ API_KEY = os.environ.get("OPENAI_API_KEY")
 BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 MODEL = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 
-client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+# 注意：client 不再在这里创建，移到 llm_filter 内部
 
 # 周一跑 → 上周一到上周日
 _today = datetime.now()
@@ -153,6 +153,8 @@ def collect_items(search_names, alias_list):
 # ========== LLM ==========
 def llm_filter(identity, items):
     if not items: return []
+    # ★ 关键改动：client 在这里才创建，send 模式不会走到这里
+    client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
     hints = "、".join(filter(None, [identity["full"], identity["common"], identity["orig"], *identity["alias"]]))
     blocks = [f"[{i}] {'外文' if it['lang']=='auto' else '中文'} {it['title']}\n{it['text']}"
               for i, it in enumerate(items, 1)]
